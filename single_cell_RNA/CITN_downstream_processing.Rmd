@@ -1,0 +1,1053 @@
+
+```{r laod data}
+
+# avg_mat <- readRDS("output/average_mat.RDS")
+# seurat <- readRDS("/mnt/efs/adam_citn/seurat_CITN.RDS")
+
+```
+
+
+```{r featureplot_bidirect}
+
+colorAssign <- function(valueVector, scale_limits = NULL, colors = c("blue", "white", "red"), length.vector = 500){
+  colorLS <- colorRampPalette(colors = colors)(length.vector)  
+  if(is.null(scale_limits)){
+    breaks <- seq(-max(abs(valueVector)), max(abs(valueVector)), length.out = length.vector)
+  } else {
+    breaks <- seq(scale_limits[1], scale_limits[2], length.out = length.vector)
+  }
+  
+  
+  minBreak <- which(abs(breaks - min(valueVector)) == min(abs(breaks - min(valueVector))))
+  maxBreak <- which(abs(breaks - max(valueVector)) == min(abs(breaks - max(valueVector))))
+  return(colorLS[minBreak:maxBreak])
+}
+
+FeaturePlot_bidirectional <- function(object, feature, pt.size = NULL, order = FALSE,
+                                      reduction = NULL, split.by = NULL, slot = "data",
+                                      cols = c("darkblue", "blue", "lightgray", "red", "darkred"), 
+                                      assay = NULL,
+                                      symetrical = F) {
+  if(is.null(assay)){
+    active_assay <- object@active.assay
+  } else if(!assay %in% names(object)){
+    stop(paste("ERROR: Assay `", assay,"` is not in the available assays.", sep = "" ))
+  } else {
+    DefaultAssay(object) <- assay
+    active_assay <- object@active.assay
+  }
+  
+  if(!feature %in% row.names(object) ){
+    stop(paste("ERROR: Feature `", feature,"` is not in the ", active_assay, "data.", sep = "" ))
+  }
+  
+  p <- FeaturePlot(object, features = feature, reduction = reduction, slot = slot, order = order, pt.size = pt.size) +
+    theme_classic() 
+  p$data <- p$data %>%
+    rownames_to_column("cell") %>%
+    inner_join(., object@meta.data %>%
+                 rownames_to_column("cell"), by = "cell") %>%
+    column_to_rownames("cell")
+  
+  colLS <- colorAssign(p$data[feature],  
+                       length.vector = 100,
+                       colors = cols)
+  #return(p)
+  if(symetrical){
+    p <- p + 
+      scale_color_gradientn(colors = colorRampPalette(colors = cols)(100), 
+                            limits = c(-max(abs(p$data[feature])), max(abs(p$data[feature])))) 
+    
+  } else {
+    p <- p + 
+      scale_color_gradientn(colors = colLS) 
+  }
+
+  if(!is.null(split.by)){
+    if(split.by %in% names(object@meta.data)) {
+      p <- p + 
+        facet_wrap(as.formula(paste("~", split.by)))
+    } else if(!split.by %in% names(object@meta.data)  ){
+      stop(paste("ERROR: split.by variable `", split.by,"` is not in the metadata.", sep = "" ))
+    }
+  }
+  return(p)
+}
+
+
+
+
+
+DotPlot_bidirectional <- function(object, features, group.by = NULL, 
+                                      slot = "data",
+                                      cols = c("darkblue", "blue", "white", "red", "darkred"),
+                                      symetrical = FALSE,
+                                      assay = NULL) {
+  if(is.null(assay)){
+    active_assay <- object@active.assay
+  } else if(!assay %in% names(object)){
+    stop(paste("ERROR: Assay `", assay,"` is not in the available assays.", sep = "" ))
+  } else {
+    DefaultAssay(object) <- assay
+    active_assay <- object@active.assay
+  }
+  invalid_feats <- setdiff(features, row.names(object))
+  if(length(invalid_feats) > 0){
+    stop(paste("ERROR: Features `", invalid_feats,"` are not in the ", active_assay, "data.", sep = "" ))
+    
+  }
+  colLS <- colorAssign(GetAssayData(object = object, slot = slot)[features,],  
+                       length.vector = 100,
+                       colors = cols)
+  p <- DotPlot(object, features = features, group.by = group.by) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+  
+  if(symetrical){
+    p <- p + 
+      scale_color_gradientn(colors = colorRampPalette(colors = cols)(100), 
+                            limits = c(-max(abs(p$data$avg.exp)), max(abs(p$data$avg.exp)))) 
+    
+  } else {
+    p <- p + 
+      scale_color_gradientn(colors = colLS) 
+  }
+
+
+  return(p)
+}
+
+#BL_seurat[labels.fine
+
+
+#  
+# test2 <- DotPlot_bidirectional(subset(test, subset = Timepoint == "C01D02"), 
+#                                       features = intersect(bulk_tfs, row.names(BL_seurat)), symetrical = T, group.by = "labels.fine")
+# test2 <- DotPlot_bidirectional(subset(BL_seurat, subset = Timepoint == "C01D02"), 
+#                                       features = citn_cytokine_correlates, symetrical = T, group.by = "labels.fine")
+```
+
+```{r average_expression_nonzero}
+
+AverageExpression_mod <- function(object, features, assay = "RNA", slot = "data", group.by ){
+    ### Different form the Normal AverageExpression function by averaging only non-zero values. 
+    ## Zero values have a tendency to reduce the real 
+  if(is.null(assay)){
+      active_assay <- object@active.assay
+  } else if(!assay %in% names(object)){
+      stop(paste("ERROR: Assay `", assay,"` is not in the available assays.", sep = "" ))
+  } else {
+      DefaultAssay(object) <- assay
+      active_assay <- object@active.assay
+  }
+  invalid_group_by <- setdiff(group.by, colnames(object@meta.data))
+
+  if(length(invalid_group_by ) > 0){
+    stop(paste("ERROR: group.by variables `", paste(invalid_group_by, collapse = ","),"` not in the metadata.", sep = "" ))
+  }
+  df <- GetAssayData(object, assay = assay, slot = slot)[intersect(features, row.names(object)),] %>%
+        as.data.frame(.) %>%
+        rownames_to_column("gene") %>%
+        gather(cell, expression, -gene) %>%
+        mutate(expression = ifelse(expression == 0, NA, expression)) %>%
+        inner_join(., object@meta.data %>%
+                      rownames_to_column("cell"), by = "cell") %>%
+        group_by_at(all_of(c("gene", all_of(group.by)))) %>%
+        summarise(mean = mean(expression, na.rm = T)) %>%
+        ungroup() %>%
+        mutate(mean = ifelse(is.na(mean), 0, mean)) %>%
+        unite(., concat, -c("gene", "mean"), sep = "___", remove=T) %>%
+        spread(concat, mean, fill = 0) %>%
+        column_to_rownames("gene")
+
+}
+
+```
+
+
+```{r baseline_expression}
+
+
+seurat <- FindVariableFeatures(seurat, assay = "RNA", nfeatures = 2000)
+
+mast_degs <- do.call("rbind", topTables_MAST_sub) %>%
+                dplyr::filter(p_val_adj < 0.05) %>%
+                .$gene %>%
+                unique()
+single_cell_subset_markers <- c("CD4", "CD8B", "CD8A", "CD19", "FCGR3A", "LYZ", "CD1C", "IL3RA", "CCR7", "IL7R", "KLRB1", "FAS", "SELL", "CCR5",
+                                "CCR2", "CD27", "IGHM", "IGHD", "SPN", "CD38", "CD24", "CR2", "FCER2", "MME", "MS4A1", 
+                                "PDCD1","TIGIT" ,"CD248","IL10RA", "BMPR1A", "CD5", "TCF7", "ID2", "FOXP3", "CTLA4", "RUNX1")
+
+checkpoint_blockers <- c("PDCD1","TIGIT" ,"CD248","IL10RA", "BMPR1A", "CD5", "ID2")
+
+bulk_tfs <- c("STAT4", "IRF8", "IRF1", "STAT3", "STAT5A", "EOMES", "GATA3", "RELA", "STAT1", "TCF7", "TCF7L2", "CTNNB1", "EZH2", "STAT6", "EGR1" ) 
+citn_cytokine_correlates <- c("IFNG","IL17A", "IL4", "TGFB1", "IFNB1", "IFNA2", "IL6", "IL17B") 
+
+cd8_function_citn <- c("LEF1", "TCF7", "TOX", "SMAD3", "FOXO1", "IRF4", "GZMA", "GZMB", "PRF1", "IFNG")
+
+bl_correct_genes <- unique(c(mast_degs, single_cell_subset_markers, checkpoint_blockers, citn_cytokine_correlates, cd8_function_citn,
+                             unique(unlist(geneIds(gmt_modules), use.names = F))))
+
+
+average_markers <- c(citn_cytokine_correlates, bulk_tfs, checkpoint_blockers,mast_degs)
+
+avg_mat <- AverageExpression(seurat, assays = "RNA", slot = "data", 
+                                           features = union(unique(unlist(moduleLS, use.names = F)),bl_correct_genes), 
+                                           group.by = c("PID", "Timepoint", "labels.fine"))$RNA %>%
+            log1p() %>% as.data.frame() 
+
+
+```
+
+```{r labels.fine_numerical}
+labels.fine_numerical <- seurat@meta.data %>%
+                          rownames_to_column("cell") %>%
+                          mutate(labels.fine_numerical = as.numeric(labels.fine)) %>%
+                          mutate(labels.fine_combined = as.factor(paste(labels.fine_numerical, "- ",
+                                                                        labels.fine, sep = ""))) %>%
+                          dplyr::select(cell, labels.fine_numerical, labels.fine_combined) %>%
+                          mutate(labels.fine_combined = fct_reorder(labels.fine_combined, labels.fine_numerical)) %>%
+                          column_to_rownames("cell")
+seurat <- AddMetaData(seurat, metadata = labels.fine_numerical)
+
+
+
+```
+
+
+```{r slea_whole}
+
+slea_matr <- gsva(as.matrix(avg_mat), gset.idx.list = gmt_modules, method = "zscore")
+
+
+slea_df <- slea_matr %>%
+            as.data.frame() %>%
+            rownames_to_column("module") %>%
+    
+            gather(sampleid, slea, -module) %>%
+            separate(sampleid, into = c("PID", "Timepoint", "labels.fine"), sep = "_") %>%
+            #mutate(labels.fine = gsub("RNA ", "", gsub("[.]", " ", labels.fine))) %>%
+            mutate(sampleid = paste(PID, labels.fine, Timepoint, sep = "__")) %>%
+            left_join(., singleR_order, by = "labels.fine") %>%
+            inner_join(., seurat@meta.data %>%
+                            dplyr::select(labels.fine, labels.fine_combined) %>%
+                            unique() , by = "labels.fine") %>%
+            spread(module, slea) %>%
+            mutate(labels.fine_combined = factor(labels.fine_combined, levels = levels(seurat$labels.fine_combined))) %>%
+            arrange(rank, Timepoint) %>%
+              column_to_rownames("sampleid")
+
+slea_gaps <- slea_df %>%
+              mutate(rown = row_number()) %>%
+            group_by(labels.fine) %>%
+            mutate(row_n_pop = row_number()) %>%
+            mutate(max_rown = max(row_n_pop)) %>%
+            ungroup() %>%
+            mutate(last = ifelse(max_rown == row_n_pop, 1, 0)) %>%
+            dplyr::filter(last ==1) %>%
+            .$rown
+
+
+
+dimplot <- DimPlot(seurat, group.by = "labels.fine")
+annotation_colors_labels.fine <- dimplot$data %>% 
+  dplyr::select(UMAP_1, UMAP_2, labels.fine) %>% 
+  bind_cols(ggplot_build(dimplot)$data) %>%
+  remove_rownames() %>%
+  dplyr::select(labels.fine, colour) %>% 
+  unique() %>%
+  inner_join(., seurat@meta.data %>%
+                  dplyr::select(labels.fine, labels.fine_combined) %>%
+                  unique(), by = "labels.fine") %>%
+  arrange(match(labels.fine, levels(seurat$labels.fine)))
+
+color_subsets <- annotation_colors_labels.fine$colour
+names(color_subsets) <- annotation_colors_labels.fine$labels.fine_combined
+color_subsets <- color_subsets[sort(match(names(color_subsets), annotation_colors_labels.fine$labels.fine_combined))]
+timepoints_colors <- brewer.pal(n = 3, "Set2")
+names(timepoints_colors) <- c("C01D01", "C01D02", "C01D08")
+annotation_color_subsets <- list("labels.fine_combined" = color_subsets, "Timepoint" = timepoints_colors)
+
+slea_hm <- pheatmap(t(slea_df[,c(6:dim(slea_df)[2])]),
+                    show_colnames = F,
+                    width =  18,
+                    annotation_col = slea_df[c("labels.fine_combined", "Timepoint")],
+                    cluster_cols = F,
+                    gaps_col = slea_gaps,
+                    clustering_distance_rows = "correlation",
+                    annotation_colors = annotation_color_subsets,
+                    color = colorRampPalette(colors = c( "blue", "white", "red"))(100),
+                    filename = "figures/slea_heatmap.pdf")
+          
+slea_top <- slea_df %>%
+              rownames_to_column("condition") %>%
+              gather(module, zscore, -PID, -Timepoint, -labels.fine, -rank, -condition, -labels.fine_combined) %>%
+              inner_join(., seurat@meta.data %>%
+                              dplyr::select(labels.fine, labels.main) %>%
+                              unique(), by = "labels.fine") %>% 
+              group_by(labels.main, module) %>%
+              summarize(median = median(zscore)) %>%
+              #spread(Timepoint, median) %>%
+              arrange(module) %>%
+              dplyr::filter(median > 0) %>%
+              split(., f = .$module)
+
+
+```
+
+```{r slea_nested_scaling}
+
+slea_split <- do.call("rbind", lapply(names(topTables_MAST_sub), function(x){
+#slea_split <- sapply(names(topTables_MAST), simplify = F, USE.NAMES = T, function(x){
+  #cell_sub <- gsub("-", ".", gsub("/", ".", gsub(" ", ".", x)))
+  cells_select <- colnames(avg_mat)[grepl(paste("_", x, sep = ""), colnames(avg_mat))]
+  
+  #return(cells_select)
+   matr <- as.matrix(avg_mat[,cells_select])
+   matr <- matr[rowVars(matr) > 0,]
+   #return(dim(matr))
+   slea_mat <- gsva(matr, gset.idx.list = gmt_modules, method = "zscore")
+   #gsva_mat <- gsva(matr, gset.idx.list = gmt_modules, method = "gsva")
+   out <- slea_mat %>%
+            as.data.frame() %>%
+            rownames_to_column("module") %>%
+            gather(sampleid, slea, -module) %>%
+            separate(sampleid, into = c("PID", "Timepoint",  "labels.fine"), sep = "_") %>%
+            #mutate(labels.fine = gsub("RNA ", "", gsub("[.]", " ", labels.fine))) %>%
+            mutate(sampleid = paste(PID, labels.fine, Timepoint, sep = "__")) %>%
+            left_join(., singleR_order, by = "labels.fine") %>%
+            spread(module, slea) %>%
+            arrange(rank, Timepoint) %>%
+              column_to_rownames("sampleid")
+#})
+}))
+
+  
+
+slea_split_test <- slea_split %>%
+                    rownames_to_column("sampleid") %>%
+                    
+                    gather(module, zscore, -sampleid, -PID, -Timepoint, -labels.fine,-rank) %>%
+                    inner_join(., seurat@meta.data %>%
+                                    dplyr::select(labels.main, labels.fine) %>%
+                                    unique(), by = "labels.fine") %>%
+                    mutate(combo_select = paste(labels.main, module, sep = "__")) %>%
+                    dplyr::filter(combo_select %in% (do.call("rbind", slea_top) %>% 
+                                                       mutate(combo_select = paste(labels.main, module, sep = "__")) %>%
+                                                                .$combo_select)) %>%
+                    #separate(sampleid, into = c("Timepoint", "PID", "labels.fine"), sep = "__") %>%
+                    dplyr::filter(Timepoint != "C01D08") %>%
+                    dplyr::select(-sampleid, -rank) %>%
+                    unique() %>%
+                    spread(Timepoint, zscore) %>%
+                    dplyr::filter(!is.na(C01D01) & !is.na(C01D02)) %>%
+                    group_by(module, labels.fine) %>%
+                    nest(data = -labels.fine, -module ) %>%
+                    #do(model = cor.test(.$gsva, .$outcome_value, method = "spearman"))
+                    mutate(model = map(data, ~ t.test(.x$C01D01, .x$C01D02, paired = T)),
+                                         tidied = map(model, tidy)) %>%
+                    unnest(tidied) %>%
+                    group_by(labels.fine) %>%
+                    mutate(padj = p.adjust(p.value, method = "BH")) %>%
+                    ungroup() %>%
+                    dplyr::filter(p.value < 0.05) %>%
+                    mutate(combo = paste(labels.fine, module, sep = "___"))
+paired_label_select_combo <- do.call("rbind", lapply(names(paired_PID_select), function(x){
+    df <- paired_PID_select[[x]] %>%
+          mutate(combo_select = paste(PID, labels.fine, sep = "__"))
+  
+  
+}))
+
+slea_split_filt <- slea_split %>%
+                    rownames_to_column("sampleid") %>%
+                    gather(module, zscore, -sampleid, -PID, -Timepoint, -labels.fine,-rank) %>%
+                    mutate(combo_select = paste(labels.fine, module, sep = "___")) %>%
+                    dplyr::filter(combo_select %in% slea_split_test$combo) %>%
+                    mutate(zscore = ifelse(combo_select %in% slea_split_test$combo, zscore, 0)) %>%
+                    mutate(combo_select = paste(PID, labels.fine, sep ="__")) %>%
+                    dplyr::filter(combo_select %in% paired_label_select_combo$combo_select) %>%
+                    dplyr::select(-combo_select, -sampleid) %>%
+                    spread(Timepoint, zscore) %>%
+                    gather(Timepoint, zscore, c("C01D02", "C01D08")) %>%
+                    mutate(delta_slea = zscore - C01D01) %>%
+                    dplyr::select(-C01D01) %>%
+                    mutate(sampleid = paste(PID, labels.fine, Timepoint,  sep ="___")) %>%
+                    inner_join(., seurat@meta.data %>%
+                            dplyr::select(labels.fine, labels.fine_combined) %>%
+                            unique() , by = "labels.fine") %>%
+                    dplyr::select(-zscore) %>%
+                    spread(module, delta_slea, fill = 0) %>%
+                     mutate(labels.fine_combined = factor(labels.fine_combined, levels = levels(seurat$labels.fine_combined))) %>%
+                    arrange(rank, Timepoint) %>%
+                    column_to_rownames("sampleid")
+
+slea_gaps_filt <- slea_split_filt %>%
+              mutate(rown = row_number()) %>%
+            group_by(labels.fine) %>%
+            mutate(row_n_pop = row_number()) %>%
+            mutate(max_rown = max(row_n_pop)) %>%
+            ungroup() %>%
+            mutate(last = ifelse(max_rown == row_n_pop, 1, 0)) %>%
+            dplyr::filter(last ==1) %>%
+            .$rown
+
+annotation_color_subsets_filt <- annotation_color_subsets
+annotation_color_subsets_filt$labels.fine_combined <- annotation_color_subsets_filt$labels.fine_combined[names(annotation_color_subsets_filt$labels.fine_combined) %in% slea_split_filt$labels.fine_combined]
+
+annotation_color_subsets_filt$Timepoint <- annotation_color_subsets_filt$Timepoint[names(annotation_color_subsets_filt$Timepoint) %in%
+                                                                                     slea_split_filt$Timepoint]
+
+
+slea_split_hm <- pheatmap(t(slea_split_filt[,c(6:dim(slea_split_filt)[2])]),
+                    show_colnames = F,
+                    width =  18,
+                    annotation_col = slea_split_filt[c("labels.fine_combined", "Timepoint")],
+                    cluster_cols = F,
+                    annotation_colors = annotation_color_subsets_filt,
+                    gaps_col = slea_gaps_filt,
+                    color = colorAssign(slea_split_filt[,c(6:dim(slea_split_filt)[2])], colors = c("darkblue","blue","white", "red", "darkred")),
+                    filename = "figures/slea_heatmap_nested.pdf")
+
+lapply(unique(slea_split_test$labels.fine), function(x){
+  filt_stats <- slea_split_test[slea_split_test$labels.fine == x,]
+  #return(filt_stats)
+  #df <- slea_split_filt[slea_split_filt$labels.fine == x,]
+  #return(df)
+  print(x)
+  #print(df)
+  lapply(unique(filt_stats$module), function(y){
+    
+      df_filt2 <- slea_split_filt[slea_split_filt$labels.fine == x,c(1:5, which(colnames(slea_split_filt) == y))]
+      #return(df_filt2)
+      #df_filt <- t(df[,-c(1:5)])
+      #return(df)
+     #print(df_filt2)
+      if(var(df_filt2[y]) > 0){
+          #return(t(df_filt2[,-c(1:5)]))
+          annotation_combined_filt <- annotation_colors_labels.fine[annotation_colors_labels.fine$labels.fine == x,]$labels.fine_combined
+          colA <- annotation_color_subsets_filt
+          colA$labels.fine_combined <- colA$labels.fine_combined[names(colA$labels.fine_combined) == annotation_combined_filt]
+          #return(colA)
+          #return(df_filt2)
+          #return(colA)
+          mat <- t(df_filt2[,-c(1:5)])
+          colnames(mat) <- row.names(df_filt2)
+          row.names(mat) <- y
+          #return(mat)
+          subset_name <- gsub("/", "_", x)
+          pheatmap(mat,
+                    show_colnames = F,
+                    width =  7,
+                    height = 7,
+                    cellwidth = 10,
+                    cellheight = 18,
+                    annotation_col = df_filt2[c("labels.fine_combined","Timepoint")],
+                    cluster_cols = F,
+                    cluster_rows = F,
+                    annotation_colors = colA,
+                    #gaps_col = slea_gaps_filt,
+                    color = colorAssign(slea_split_filt[,c(6:dim(slea_split_filt)[2])], colors = c("darkblue","blue","white", "red", "darkred")),
+                    filename = paste("figures/nested_slea_heatmaps/", subset_name, "_", y, "_slea_heatmap_nested.pdf", sep = ""))
+      }
+    
+  })
+
+})
+
+# pdf("figures/slea_median_per_subset_scaling.pdf", width = 12)
+# print(slea_median_split)
+# 
+# dev.off()
+
+
+```
+
+```{r baselining genes}
+baseline_mat <- as.data.frame(GetAssayData(AverageExpression(seurat, assays = "RNA", slot = "data",
+                                           group.by = c("PID", "Timepoint","labels.fine") ,
+                                           features = bl_correct_genes,
+                                           return.seurat = T), assay = "RNA", slot = "data")) %>%
+                                      rownames_to_column("gene") %>%
+                                      gather(sampleid, expression, -gene) %>%
+                                      separate(sampleid, into = c("PID", "Timepoint", "labels.fine"), sep = "_" ) %>%
+                                      spread(Timepoint, expression) %>%
+                                      dplyr::filter(!is.na(C01D01)) %>%
+                                      dplyr::select(-C01D02, -C01D08) %>%
+                                      #mutate(labels.fine = gsub("RNA ", "", gsub("[.]", " ", labels.fine))) %>%
+                                      #mutate(PID = gsub("[.]", "-", PID)) %>%
+                                      #mutate(labels.fine = gsub("Th1 Th17", "Th1/Th17", labels.fine)) %>%
+                                      #mutate(labels.fine = gsub("Non switched", "Non-switched", labels.fine)) %>%
+                                      #mutate(labels.fine = gsub("Non Vd2", "Non-Vd2", labels.fine)) %>%
+                                      #mutate(labels.fine = gsub("Low ", "Low-", labels.fine)) %>%
+                                      mutate(combo = paste(PID, gene, sep = "___")) %>%
+                                      dplyr::select(combo, labels.fine,C01D01) %>%
+                                      split(., f = .$labels.fine)
+
+# 
+# baselined_expression <- pbsapply(names(baseline_mat), simplify = F, USE.NAMES = T, function(x){
+#       print(x)
+#       subs <- subset(seurat, subset = labels.fine == x)
+#       
+#       #subs <- subset(subs, subset = Timepoint != "C01D01")
+#       pop <- x
+#       matr <- GetAssayData(subs[["RNA"]], slot ="data") %>%
+#               as.data.frame() %>%
+#               rownames_to_column("gene") %>%
+#               filter(gene %in% bl_correct_genes) %>%
+#               gather(cell, expression, -gene) %>%
+#               inner_join(., subs@meta.data %>%
+#                               rownames_to_column("cell") %>%
+#                               dplyr::select(cell, PID), by = "cell") %>%
+#               mutate(combo = paste(PID,gene, sep = "___")) %>%
+#               left_join(., baseline_mat[[pop]]  %>%
+#                             dplyr::select(-labels.fine), by = "combo") %>%
+#               mutate(baselined = ifelse(expression == 0, 0,  expression - C01D01)) %>% ## to avoid baselining dropouts
+#               #mutate(baselined = ifelse(is.na(baselined), 0, baselined)) %>%
+#               dplyr::select(-combo, -C01D01, -expression) %>%
+#               unique() %>%
+#               dplyr::select(-PID) %>%
+#               spread(cell, baselined, fill = 0) %>%
+#               column_to_rownames("gene") 
+#       #matr <- matr[row.names(subs), colnames(subs)]  
+#       #matr(is.na(matr)) <- 0
+#       sp_matr <- Matrix(as.matrix(matr), sparse = T)
+#       rna_bl <- CreateAssayObject(data = sp_matr)
+#       subs[["RNABaseline"]] <- rna_bl
+#       return(subs)
+# })
+# 
+# BL_seurat <- merge(x = baselined_expression$`Central memory CD8 T cells`,
+#                    y = unlist(baselined_expression)[c(2:length(baselined_expression))])
+# BL_seurat[["umap"]] <- subset(seurat, cells = colnames(BL_seurat))@reductions$umap
+# BL_seurat[["pca"]] <- subset(seurat, cells = colnames(BL_seurat))@reductions$pca
+# rm(baselined_expression)
+# 
+# baselined_expression_sig <- pbsapply(names(baseline_mat), simplify = F, USE.NAMES = T, function(x){
+#       print(x)
+#       subs <- subset(seurat, subset = labels.fine == x)
+#       
+#       #subs <- subset(subs, subset = Timepoint != "C01D01")
+#       pop <- x
+#       
+#       if(x %in% names(topTables_MAST_sub)){
+#         sig_genes <- topTables_MAST_sub[[x]] %>%
+#                     dplyr::filter(p_val_adj < 0.05) %>%
+#                     .$gene
+#         
+#       } else{
+#         sig_genes <- c()
+#       }
+#       
+#       matr <- as.data.frame(subs@assays$RNA@data[bl_correct_genes,]) %>%
+#               rownames_to_column("gene") %>%
+#               gather(cell, expression, -gene) %>%
+#               inner_join(., subs@meta.data %>%
+#                               rownames_to_column("cell") %>%
+#                               dplyr::select(cell, PID), by = "cell") %>%
+#               mutate(combo = paste(PID,gene, sep = "___")) %>%
+#               left_join(., baseline_mat[[pop]]  %>%
+#                             dplyr::select(-labels.fine), by = "combo") %>%
+#               mutate(baselined = ifelse(expression == 0, 0,  expression - C01D01)) %>% ## to avoid baselining dropouts
+#               mutate(baselined = ifelse(gene %in% sig_genes, baselined, 0)) %>%
+#               dplyr::select(-combo, -C01D01, -expression) %>%
+#               unique() %>%
+#               dplyr::select(-PID) %>%
+#               spread(cell, baselined, fill = 0) %>%
+#               column_to_rownames("gene") 
+#       #matr <- matr[row.names(subs), colnames(subs)]  
+#       #matr(is.na(matr)) <- 0
+#       sp_matr <- Matrix(as.matrix(matr), sparse = T)
+#       rna_bl <- CreateAssayObject(data = sp_matr)
+#       subs[["RNABaseline_sig"]] <- rna_bl
+#       return(subs)
+# })
+# 
+# BL_seurat_sig <- merge(x = baselined_expression_sig$`Central memory CD8 T cells`,
+#                    y = unlist(baselined_expression_sig)[c(2:length(baselined_expression_sig))])
+# rm(baselined_expression_sig)
+# BL_seurat[["RNABaseline_sig"]] <- GetAssay(BL_seurat_sig, assay = "RNABaseline_sig")
+# 
+# 
+# DefaultAssay(BL_seurat) <- "RNABaseline"
+# BL_seurat[["labels.fine"]] <- factor(BL_seurat$labels.fine, levels = levels(seurat$labels.fine))
+# 
+# # latency_outcome <- BL_seurat@meta.data %>%
+# #                     rownames_to_column("cell") %>%
+# #                     inner_join(., citn_meta %>%
+# #                                   dplyr::select(SampleNumber, EOT_HIV_DNA), by = "SampleNumber") %>%
+# #                     mutate(latency = ifelse(is.na(EOT_HIV_DNA), "ND",ifelse(EOT_HIV_DNA > -75, "Low", "High"))) %>%
+# #                     dplyr::select(cell, EOT_HIV_DNA, latency) %>%
+# #                     column_to_rownames("cell")
+# # BL_seurat <- AddMetaData(BL_seurat, metadata = latency_outcome)
+# 
+# 
+# 
+# test <- FeaturePlot_bidirectional(BL_seurat, feature = "TCF7", reduction = "umap", split.by = "Timepoint")
+# 
+# test <- FeaturePlot_bidirectional(BL_seurat, feature = "TGFB1", reduction = "umap", split.by = "Timepoint", assay = "RNABaseline")
+# 
+# test2 <- FeaturePlot_bidirectional(subset(BL_seurat, subset = Timepoint == "C01D02" & latency != "ND"),
+#                                    feature = "GZMB", reduction = "umap", split.by = "latency", assay = "RNABaseline" )
+# 
+# pdf("output/figures/TGFB1_baselined.pdf", width = 10)
+# test3 <- FeaturePlot_bidirectional(BL_seurat,
+#                                    feature = "TGFB1", reduction = "umap", split.by = "Timepoint", assay = "RNABaseline" )
+# print(test3)
+# dev.off()
+# # test4 <- DotPlot_bidirectional(BL_seurat, group.by = "labels.fine", split.by = "Timepoint", 
+# #                                    features = citn_cytokine_correlates, assay = "RNABaseline_sig" )
+# # 
+# # labels_select <- unique(seurat$labels.fine)[grepl("CD4|Th1|Th2|T reg|mono|CD8", unique(seurat$labels.fine))]
+# 
+# svg("output/figures/dotplot_baselined_cytokines.svg", width = 10)
+# DotPlot_bidirectional(subset(BL_seurat, subset =  Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                               features = citn_cytokine_correlates, assay = "RNABaseline_sig", symetrical = T )
+# dev.off()
+# 
+# svg("output/figures/dotplot_baselined_checkpoint_blockers.svg", width = 10)
+# DotPlot_bidirectional(subset(BL_seurat, subset =  Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                               features = checkpoint_blockers, assay = "RNABaseline_sig", symetrical = T )
+# dev.off()
+# 
+# 
+# 
+# test5 <- DotPlot_bidirectional(subset(BL_seurat, subset =  Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                               features = citn_cytokine_correlates, assay = "RNABaseline_sig", symetrical = T )
+# 
+# DefaultAssay(BL_seurat) <- "RNABaseline"
+# test5_hm <- DoHeatmap(subset(subset(BL_seurat, subset = Timepoint == "C01D02" & labels.fine %in% labels_select )), 
+#                       group.by = "labels.fine", features = geneIds(gmt_modules["TGF_Beta_signaling_Activation"])[[1]], slot = "data")
+# 
+# test5_checkpoint <- DotPlot_bidirectional(subset(BL_seurat, subset = Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                                    features = checkpoint_blockers, assay = "RNABaseline_sig" , symetrical = T)
+# 
+# test5_tf <- DotPlot_bidirectional(subset(BL_seurat, subset = Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                                    features = intersect(bulk_tfs, row.names(BL_seurat)), assay = "RNABaseline_sig" , symetrical = T)
+# 
+# test6 <- DotPlot(subset(BL_seurat, subset = Timepoint == "C01D02" & labels.fine %in% labels_select ),
+#                                group.by = "labels.fine", 
+#                                    features = citn_cytokine_correlates, assay = "RNABaseline_sig" )
+# saveRDS(BL_seurat, file = "/mnt/efs/adam_citn/data/seurat_baselined.RDS")
+
+```
+
+
+```{r slea_vs_outcomes}
+
+
+BL_avg_mat <- do.call("rbind", pbsapply(names(baseline_mat), simplify = F, USE.NAMES = T, function(x){
+          print(x)
+          mat <- avg_mat %>%
+              as.data.frame() %>%
+              rownames_to_column("gene") %>%
+              filter(gene %in% unique(unlist(geneIds(gmt_modules), use.names = F))) %>%
+              gather(condition, expression, -gene) %>%
+              separate(condition, into = c("PID", "Timepoint", "labels.fine"), sep = "_", remove = F ) %>%
+              dplyr::filter(Timepoint != "C01D01") %>%
+              dplyr::filter(labels.fine == x) %>%
+              mutate(combo = paste(PID, gene, sep = "___")) %>%
+              left_join(., baseline_mat[[x]] %>% dplyr::select(-labels.fine), by = "combo") %>%
+              mutate(baselined = expression - C01D01) %>%
+              dplyr::select(condition, gene, baselined) 
+  
+  
+})) %>%
+  spread(condition, baselined, fill = 0) %>%
+  column_to_rownames("gene")
+
+BL_slea <- gsva(as.matrix(BL_avg_mat), gset.idx.list = gmt_modules)
+#BL_slea <- slea_matr[,!grepl("C01D01", colnames(slea_matr))]
+
+early_outcomes <- citn_meta <- read_excel("CITN_all_expcept_RNAseq_Adam.xlsx") %>%
+                    dplyr::filter(Visit == "C01D02") %>%
+                    #dplyr::filter(!is.na(FlowSampleNumber)) %>%
+                    dplyr::rename(Days_to_EOT = "Days (EOT-C01D01)",
+                                  SampleNumber = "FlowSampleNumber",
+                                  EOT_HIV_DNA = "AVG DNA HIV/10^6 CCR5 (EOT-C01D01)") %>%
+                    mutate(Tumour_progression = Response) %>%
+                                  mutate(Tumour_progression = ifelse(Response %in% c("Complete Response", 
+                                                                                     "Stable Disease"),
+                                                                     "Stable_or_Complete",
+                                                                     Tumour_progression)) %>%
+                                  mutate(Tumour_progression = ifelse(Tumour_progression %in% 
+                                                                       c("Disease Progression",
+                                                                         "Stable_or_Complete"),
+                                                                         Tumour_progression, "ND")) %>%
+                    dplyr::rename(PID = "DonorID") %>%
+                    dplyr::select(PID, PlasmaVL,  DNA_CCR5, EOT_HIV_DNA , ) %>%
+                    
+
+
+late_outcomes <- citn_meta <- read_excel("CITN_all_expcept_RNAseq_Adam.xlsx") %>%
+                    dplyr::filter(Visit == "EOT") %>%
+                    #dplyr::filter(!is.na(FlowSampleNumber)) %>%
+                    dplyr::rename(Days_to_EOT = "Days (EOT-C01D01)",
+                                  SampleNumber = "FlowSampleNumber",
+                                  EOT_HIV_DNA = "AVG DNA HIV/10^6 CCR5 (EOT-C01D01)") %>%
+                    mutate(Tumour_progression = Response) %>%
+                                  mutate(Tumour_progression = ifelse(Response %in% c("Complete Response", 
+                                                                                     "Stable Disease"),
+                                                                     "Stable_or_Complete",
+                                                                     Tumour_progression)) %>%
+                                  mutate(Tumour_progression = ifelse(Tumour_progression %in% 
+                                                                       c("Disease Progression",
+                                                                         "Stable_or_Complete"),
+                                                                         Tumour_progression, "ND")) %>%
+                    dplyr::rename(PID = "DonorID") %>%
+                    dplyr::select(PID, PlasmaVL,  DNA_CCR5, Response, EOT_HIV_DNA, Tumour_progression )
+
+
+
+slea_delta 
+# slea_delta_vs_outcomes_late <- slea_split %>%
+#                             rownames_to_column("sampleid") %>%
+#                             gather(module, zscore, -sampleid, -PID, -Timepoint, -labels.fine,-rank) %>%
+#                             mutate(combo_select = paste(labels.fine, module, sep = "___")) %>%
+#                             dplyr::filter(combo_select %in% slea_split_test$combo) %>%
+#                             mutate(zscore = ifelse(combo_select %in% slea_split_test$combo, zscore, 0)) %>%
+#                             mutate(combo_select = paste(PID, labels.fine, sep ="__")) %>%
+#                             dplyr::filter(combo_select %in% paired_label_select_combo$combo_select) %>%
+#                             dplyr::select(-combo_select, -sampleid) %>%
+#                             spread(Timepoint, zscore) %>%
+#                             gather(Timepoint, zscore, c("C01D02", "C01D08")) %>%
+#                             mutate(delta_slea = zscore - C01D01) %>%
+#                             dplyr::select(-C01D01, -delta_slea) %>%
+#                             #dplyr::select(-C01D01, -zscore) %>%
+#                             mutate(sampleid = paste(PID, labels.fine, Timepoint,  sep ="___")) %>%
+#                             mutate(timedonor = paste(PID, Timepoint, sep = "___")) %>%
+#                             inner_join(., late_outcomes, by = "PID") 
+
+slea_top_ls <- do.call("rbind", slea_top) %>%
+                inner_join(., seurat@meta.data %>%
+                              dplyr::select(labels.main, labels.fine) %>%
+                              unique(), by = "labels.main") %>%
+                mutate(combo = paste(labels.fine, module, sep = "___"))
+
+BL_slea_df <- as.data.frame(BL_slea) %>%
+                            rownames_to_column("module") %>%
+                            gather(sampleid, zscore, -module) %>%
+                            separate(sampleid, into = c("PID", "Timepoint", "labels.fine"), sep = "_", remove = F) %>%
+                            mutate(combo_select = paste(labels.fine, module, sep = "___")) %>%
+                            filter(combo_select %in% slea_top_ls$combo) %>%
+                            #dplyr::filter(combo_select %in% slea_split_test$combo) %>%
+                            #mutate(zscore = ifelse(combo_select %in% slea_split_test$combo, zscore, 0)) %>%
+                            mutate(combo_select = paste(PID, labels.fine, sep ="__")) %>%
+                            #dplyr::filter(combo_select %in% paired_label_select_combo$combo_select) %>%
+                            dplyr::select(-combo_select, -sampleid) %>%
+                            mutate(sampleid = paste(PID, labels.fine, Timepoint,  sep ="___")) %>%
+                            mutate(timedonor = paste(PID, Timepoint, sep = "___")) 
+BL_slea_vs_outcomes <- BL_slea_df %>%
+                        inner_join(., early_outcomes, by = "PID") 
+
+
+BL_slea_vs_outcomes_late <- BL_slea_df %>%
+                              inner_join(., late_outcomes, by = "PID")
+
+BL_slea_vs_outcomes_test <- BL_slea_vs_outcomes %>%
+                                gather(outcome, value, c("PlasmaVL",  "DNA_CCR5")) %>%
+                                dplyr::filter(!is.na(value)) %>%
+                                dplyr::filter(value != "NA") %>%
+                                dplyr::filter(!is.na(zscore)) %>%
+                                mutate(value = as.numeric(value)) %>%
+                                #filter(Timepoint == "C01D02") %>%
+                                group_by(outcome, labels.fine, module, Timepoint) %>%
+                                mutate(nrows = n_distinct(PID)) %>%
+                                ungroup() %>%
+                                dplyr::filter(nrows >= 3) %>%
+                                group_by(outcome, labels.fine, module, Timepoint) %>%
+                                nest(data = -labels.fine, -module, -Timepoint, -outcome ) %>%
+                                # mutate(model = map(data, ~ cor.test(.x$delta_slea, .x$value, paired = T)),
+                                #                      tidied = map(model, tidy)) %>%
+                                mutate(model = map(data, ~ cor.test(.x$zscore, .x$value, paired = T)),
+                                                     tidied = map(model, tidy)) %>%
+                                unnest(tidied) %>%
+                                ungroup() %>%
+                                mutate(combo = paste(labels.fine, module, sep = "___")) %>%
+                                #filter(combo %in% slea_split_test$combo) %>%
+                                mutate(sig_24h = ifelse(combo %in% slea_split_test$combo, "sig", "ns" )) %>%
+                                group_by(outcome) %>%
+                                mutate(padj = p.adjust(p.value, method = "BH")) %>%
+                                ungroup() %>%
+                                dplyr::filter(p.value < 0.05 )
+
+BL_slea_vs_outcomes_late_test <- BL_slea_vs_outcomes_late %>%
+                                gather(outcome, value, c("PlasmaVL", "EOT_HIV_DNA", "DNA_CCR5")) %>%
+                                dplyr::filter(!is.na(value)) %>%
+                                dplyr::filter(value != "NA") %>%
+                                dplyr::filter(!is.na(zscore)) %>%
+                                mutate(value = as.numeric(value)) %>%
+                                filter(Timepoint == "C01D02") %>%
+                                group_by(outcome, labels.fine, module, Timepoint) %>%
+                                mutate(nrows = n_distinct(PID)) %>%
+                                ungroup() %>%
+                                dplyr::filter(nrows >= 3) %>%
+                                group_by(outcome, labels.fine, module, Timepoint) %>%
+                                nest(data = -labels.fine, -module, -Timepoint, -outcome ) %>%
+                                # mutate(model = map(data, ~ cor.test(.x$delta_slea, .x$value, paired = T)),
+                                #                      tidied = map(model, tidy)) %>%
+                                mutate(model = map(data, ~ cor.test(.x$zscore, .x$value, paired = T)),
+                                                     tidied = map(model, tidy)) %>%
+                                unnest(tidied) %>%
+                                ungroup() %>%
+                                mutate(combo = paste(labels.fine, module, sep = "___")) %>%
+                                #filter(combo %in% slea_split_test$combo) %>%
+                                mutate(sig_24h = ifelse(combo %in% slea_split_test$combo, "sig", "ns" )) %>%
+                                group_by(outcome) %>%
+                                mutate(padj = p.adjust(p.value, method = "BH")) %>%
+                                ungroup() %>%
+                                dplyr::filter(p.value < 0.05 )
+
+BL_slea_vs_outcomes_tumour_test <- BL_slea_vs_outcomes_late %>%
+                                #gather(outcome, value, c("PlasmaVL", "EOT_HIV_DNA", "DNA_CCR5")) %>%
+                                dplyr::filter(!is.na(Tumour_progression)) %>%
+                                dplyr::filter(Tumour_progression != "ND") %>%
+                                dplyr::filter(!is.na(zscore)) %>%
+                                #mutate(value = as.numeric(value)) %>%
+                                filter(Timepoint == "C01D02") %>%
+                                group_by(labels.fine, module, Timepoint) %>%
+                                mutate(nrows = n_distinct(PID)) %>%
+                                ungroup() %>%
+                                dplyr::filter(nrows >= 3) %>%
+                                group_by(labels.fine, module, Timepoint) %>%
+                                nest(data = -module,  -labels.fine, -Timepoint ) %>%
+                                # mutate(model = map(data, ~ cor.test(.x$delta_slea, .x$value, paired = T)),
+                                #                      tidied = map(model, tidy)) %>%
+                                mutate(model = map(data, ~ t.test( .x$zscore ~ .x$Tumour_progression)),
+                                                     tidied = map(model, tidy)) %>%
+                                unnest(tidied) %>%
+                                ungroup() %>%
+                                mutate(combo = paste(labels.fine, module, sep = "___")) %>%
+                                #filter(combo %in% slea_split_test$combo) %>%
+                                mutate(sig_24h = ifelse(combo %in% slea_split_test$combo, "sig", "ns" )) %>%
+                                #group_by(outcome) %>%
+                                mutate(padj = p.adjust(p.value, method = "BH")) %>%
+                                #ungroup() %>%
+                                dplyr::filter(p.value < 0.05 )
+
+```
+
+
+```{r nested_scaling}
+# 
+# nested_scaling_sig <- sapply(names(topTables_MAST_sub)[5], simplify = F, USE.NAMES = T, function(x){
+#       print(x)
+#       subs <- subset(seurat, subset = labels.fine == x & PID %in% paired_PID_select[[x]]$PID)
+#       #subs <- subset(subs, subset = Timepoint != "C01D01")
+#       pop <- x
+#       DefaultAssay(subs) <- "RNA"
+#       if(x %in% names(topTables_MAST_sub)){
+#         sig_genes <- topTables_MAST_sub[[x]] %>%
+#                     dplyr::filter(p_val_adj < 0.05) %>%
+#                     .$gene
+#         
+#       } else{
+#         sig_genes <- c()
+#       }
+#       subs <- ScaleData(subs, features = bl_correct_genes, split.by = "PID")
+#       return(subs)
+#       rna_scaled <- CreateAssayObject(data = GetAssayData(subs, slot = "scale.data", assay = "RNA"))
+#       #matr <- matr[row.names(subs), colnames(subs)]  
+#       #matr(is.na(matr)) <- 0
+#       # sp_matr <- Matrix(as.matrix(matr), sparse = T)
+#       # rna_bl <- CreateAssayObject(data = sp_matr)
+#       subs[["nested-scale"]] <- rna_scaled
+#       return(subs)
+# })
+# 
+# nested_scaling_seurat <- merge(x = nested_scaling_sig$`Central memory CD8 T cells`,
+#                    y = unlist(nested_scaling_sig)[c(2:length(nested_scaling_sig))])
+# nested_scaling_seurat[["umap"]] <- subset(seurat, cells = colnames(nested_scaling_seurat))@reductions$umap
+# nested_scaling_seurat[["pca"]] <- subset(seurat, cells = colnames(nested_scaling_seurat))@reductions$pca
+# #BL_seurat[["RNABaseline_sig"]] <- GetAssay(BL_seurat_sig, assay = "RNABaseline_sig")
+# 
+# pdf("nested_scaling_irf1.pdf", width = 15)
+# FeaturePlot_bidirectional(nested_scaling_seurat, feature = "IRF1", split.by = "Timepoint", assay = "nested.scale", slot = "data")
+# dev.off()
+```
+
+
+```{r baseline_expression_avg}
+# 
+# mast_degs <- do.call("rbind", topTables_MAST) %>%
+#               dplyr::filter(p_val_adj < 0.05) %>%
+#               .$gene %>%
+#               unique()
+# 
+# average_markers <- c(citn_cytokine_correlates, bulk_tfs, checkpoint_blockers,mast_degs)
+# 
+# test <- AverageExpression(seurat, assays = "RNA", group.by = c("SampleNumber", "labels.fine"),
+#                             features = average_markers, slot = "data")$RNA
+# 
+# fc_df <-   AverageExpression(seurat, assays = "RNA", group.by = c("SampleNumber", "labels.fine"),
+#                             features = average_markers, slot = "data")$RNA %>%
+#                 as.data.frame() %>%
+#                 rownames_to_column("gene") %>%
+#                 gather(condition, expression, -gene) %>%
+#                 separate(condition, into = c("SampleNumber", "labels.fine"), sep = "_") %>%
+#                 inner_join(., seurat@meta.data %>%
+#                               rownames_to_column("cell") %>%
+#                               dplyr::select(Timepoint, PID, SampleNumber) %>%
+#                               unique(), by = "SampleNumber") %>%
+#                 dplyr::select(-SampleNumber) %>%
+#                 spread(Timepoint, expression, fill = 0) %>%
+#                 gather(Timepoint, expression, -gene, -labels.fine, -PID, -C01D01) %>%
+#                 mutate(logFC = expression - C01D01) %>%
+#                 mutate(combo = paste(PID, Timepoint,gene, sep = "___")) %>%
+#                 dplyr::select(combo, labels.fine,logFC, gene) %>%
+#                 split(., f = .$labels.fine)
+# 
+# 
+# whole_fc_baselined <- sapply(names(fc_df), simplify = F, USE.NAMES = T, function(x){
+#       print(x)
+#       subs <- subset(seurat, subset = labels.fine == x)
+#       
+#       subs <- subset(subs, subset = Timepoint != "C01D01")
+#       pop <- x
+#       matr <- as.data.frame(subs@assays$RNA@data[average_markers,]) %>%
+#               rownames_to_column("gene") %>%
+#               gather(cell, expression, -gene) %>%
+#               inner_join(., seurat@meta.data %>%
+#                               rownames_to_column("cell") %>%
+#                               dplyr::select(cell, PID,Timepoint), by = "cell") %>%
+#               mutate(combo = paste(PID, Timepoint, gene, sep = "___") ) %>%
+#               inner_join(., fc_df[[x]] %>% dplyr::select(combo, logFC), by = "combo") %>%
+#               mutate(logFC = ifelse(expression == 0, 0, logFC)) %>%
+#               mutate(logFC = ifelse(logFC > 20, 0, logFC)) %>% ### a few basophils had super high expression levels of a few markers and weren't filtered out by QC
+#               dplyr::select(cell, gene, logFC) %>%
+#               spread(cell, logFC, fill = 0) %>%
+#               column_to_rownames("gene")
+#   sp_matr <- Matrix(as.matrix(matr), sparse = T)
+#   rna_bl <- CreateAssayObject(data = sp_matr)
+#   subs[["RNABaseline_avg"]] <- rna_bl
+#   return(subs)
+#   
+#   })
+#              
+# 
+# 
+# BL_seurat_avg <- merge(x = whole_fc_baselined$`Central memory CD8 T cells`,
+#                    y = unlist(whole_fc_baselined)[c(2:length(whole_fc_baselined))])
+# BL_seurat_avg[["umap"]] <- subset(seurat, cells = colnames(BL_seurat_avg))@reductions$umap
+# BL_seurat_avg[["pca"]] <- subset(seurat, cells = colnames(BL_seurat_avg))@reductions$pca
+# 
+# 
+# saveRDS(BL_seurat_avg, "/mnt/efs/adam_citn/seurat_baselined_average.RDS")
+# 
+# DefaultAssay(BL_seurat_avg) <- "RNABaseline_avg"
+# FeaturePlot_bidirectional(BL_seurat_avg, feature = "TGFB1", split.by = "Timepoint")
+```
+
+
+
+
+```{r slea_per_subset}
+gmt_modules <- getGmt("output/data/bulk_modules.gmt")
+# baselined_gsva_split <- do.call("rbind", lapply(names(topTables_MAST_sub), function(x){
+#   cell_sub <- gsub("-", ".", gsub("/", ".", gsub(" ", ".", x)))
+#   cells_select <- colnames(avg_mat)[grepl(paste("RNA.", cell_sub, sep = ""), colnames(avg_mat))]
+#   #return(cells_select)
+#    matr <- as.matrix(avg_mat[,cells_select])
+#    matr <- matr[rowVars(matr) > 0,]
+#    
+#    matrBL <- matr %>%
+#             as.data.frame() %>%
+#             rownames_to_column("gene") %>%
+#             gather(sampleid, expression, -gene) %>%
+#             separate(sampleid, into = c("labels.fine", "PID", "Timepoint"), sep = "_", ) %>%
+#             spread(Timepoint, expression) %>%
+#             dplyr::filter(!is.na(C01D01) & !is.na(C01D02)) %>%
+#             mutate(BL = C01D02 - C01D01) %>%
+#             dplyr::select(-C01D01, -C01D02, -C01D08) %>%
+#             mutate(condition = paste(labels.fine, PID, sep = "_")) %>%
+#             dplyr::select(-PID, -labels.fine) %>%
+#             spread(condition, BL, fill = 0) %>%
+#             unique() %>%
+#             column_to_rownames("gene") %>%
+#             as.matrix()
+#             
+#             
+#    #return(matrBL)
+#    gsva_mat <- gsva(matrBL, gset.idx.list = gmt_modules, method = "zscore")
+#    #gsva_mat <- gsva(matr, gset.idx.list = gmt_modules, method = "gsva")
+#    out <- gsva_mat %>%
+#             as.data.frame() %>%
+#             rownames_to_column("module") %>%
+#             gather(sampleid, gsva, -module) %>%
+#             separate(sampleid, into = c("labels.fine", "PID"), sep = "_") %>%
+#    #dplyr::filter(!is.na())
+#    mutate(labels.fine = gsub("RNA ", "", gsub("[.]", " ", labels.fine))) %>%
+#    mutate(sampleid = paste(PID, labels.fine, sep = "__")) %>%
+#    left_join(., singleR_order, by = "labels.fine") %>%
+#    spread(module, gsva) %>%
+#    arrange(rank) %>%
+#      column_to_rownames("sampleid")
+#   
+# }))
+# 
+# 
+# #gsva_vs_outcomes <- gsva_split %>%
+# gsva_vs_outcomes <- baselined_gsva_split %>%
+#                     mutate(PID = gsub("[.]", "-", PID)) %>%
+#                     gather(module, gsva, -PID, -labels.fine) %>%
+#                     #filter(grepl("Interferon", module)) %>%
+#                     mutate(combo = paste(labels.fine, module, sep = "___")) %>%
+#                     #dplyr::filter(combo %in% gsva_split_test$combo) %>%
+#                     inner_join(., sample_key_df %>%
+#                                  dplyr::filter(Timepoint == "C01D02") ,
+#                                  #mutate(combo = paste(PID, Timepoint, sep ="__")) %>%
+#                                  #dplyr::select(-PID, -Timepoint),
+#                                by = "PID") %>%
+#                     inner_join(., citn_meta %>% 
+#                                   dplyr::select(SampleNumber, DNA_CCR5, PlasmaVL, EOT_HIV_DNA), by = "SampleNumber") %>%
+#                     gather(outcome, outcome_value, c("DNA_CCR5", "PlasmaVL", "EOT_HIV_DNA")) %>%
+#                     #dplyr::select(-combo, -SampleNumber) %>%
+#                     #spread(Timepoint, gsva) %>%
+#                     #dplyr::filter(!is.na(C01D01) & !is.na(C01D02) ) %>%
+#                     #mutate(gsva_delta = C01D02 - C01D01) %>%
+#                     #dplyr::filter(Timepoint == "C01D02") %>%
+#                    # mutate(combo2 = paste(labels.fine, module, sep = "__")) %>%
+#                     #inner_join(., consolidated_fgsea %>%
+#                  #                 dplyr::select(combo, padj) %>%
+#                   #                dplyr::filter(padj < 0.1), by = c("combo2" = "combo")) %>%
+#                     mutate(outcome_value = ifelse(outcome_value == "NA", NA, outcome_value )) %>%
+#                     mutate(outcome_value = as.numeric(outcome_value)) %>%
+#                     filter(is.finite(gsva) & is.finite(outcome_value)) %>%
+#                     filter(!is.na(outcome_value)) %>%
+#                     # nest(data = -labels.fine, -outcome, -module) %>%
+#                     group_by(outcome, labels.fine, module) %>%
+#                     mutate(n = n_distinct(PID)) %>%
+#                     ungroup() %>%
+#                     filter(n >= 3) %>%
+#                     mutate(combo_condition = paste(labels.fine, module, outcome, sep = "___")) #%>%
+# 
+# gsva_vs_outcomes_stats <- gsva_vs_outcomes %>%
+#                     group_by(outcome, labels.fine, module, combo_condition) %>%
+#                     nest(data = -labels.fine, -outcome, -module, -combo_condition) %>%
+#                     #do(model = cor.test(.$gsva, .$outcome_value, method = "spearman"))
+#                     mutate(model = map(data, ~ cor.test(.x$gsva, .x$outcome_value, method = "spearman")),
+#                                          tidied = map(model, tidy)) %>%
+#                     unnest(tidied) %>%
+#                     ungroup() %>%
+#                     group_by(outcome) %>%
+#                     mutate(padj = p.adjust(p.value, method = "BH")) %>%
+#                     ungroup() %>%
+#                     dplyr::filter(p.value < 0.05) %>%
+#                     dplyr::select(-data, -model) %>%
+#                     split(., f = .$outcome)
+
+
+```
+
+
+```{r save data}
+save.image(file = "/mnt/efs/adam_citn/seurat_session_citn.RData")
+
+
+```
+
+
